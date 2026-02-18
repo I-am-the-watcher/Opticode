@@ -1,0 +1,5 @@
+{
+  "name": "OptiCode AI",
+  "description": "An advanced Python code optimization platform featuring deterministic rule-based transformations and LLM-driven semantic improvements with integrated XAI and visual analytics.",
+  "requestFramePermissions": []
+}
