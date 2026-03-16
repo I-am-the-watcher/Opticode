@@ -1,7 +1,7 @@
 /**
  * HistoryPage.tsx
  * Reads optimization history directly from MongoDB via /api/history.
- * All data is real — stored per-user, persists across devices.
+ * Includes a built-in diff viewer that highlights deleted/added lines.
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
@@ -9,7 +9,337 @@ import { useNavigate, Link } from 'react-router-dom';
 import { historyApi, authApi, SessionRecord } from '../api';
 
 // ─────────────────────────────────────────────────────────────
-// SMALL COMPONENTS
+// DIFF ENGINE
+// Computes a line-by-line diff between two strings.
+// Returns an array of { type: 'same'|'removed'|'added', line: string }
+// ─────────────────────────────────────────────────────────────
+
+type DiffLine = { type: 'same' | 'removed' | 'added'; line: string; lineNo: number };
+
+function computeDiff(original: string, optimized: string): DiffLine[] {
+  const origLines = original.split('\n');
+  const optLines  = optimized.split('\n');
+
+  // Myers diff via LCS (longest common subsequence)
+  const m = origLines.length;
+  const n = optLines.length;
+
+  // Build LCS table
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (origLines[i - 1] === optLines[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+
+  // Backtrack to build diff
+  const result: DiffLine[] = [];
+  let i = m, j = n;
+  let origNo = m, optNo = n;
+
+  const stack: DiffLine[] = [];
+
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && origLines[i - 1] === optLines[j - 1]) {
+      stack.push({ type: 'same', line: origLines[i - 1], lineNo: i });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      stack.push({ type: 'added', line: optLines[j - 1], lineNo: j });
+      j--;
+    } else {
+      stack.push({ type: 'removed', line: origLines[i - 1], lineNo: i });
+      i--;
+    }
+  }
+
+  return stack.reverse();
+}
+
+// ─────────────────────────────────────────────────────────────
+// CODE BLOCK  (plain code view with copy button)
+// ─────────────────────────────────────────────────────────────
+
+const CodeBlock: React.FC<{ code: string; label: string; accentColor?: string }> = ({ code, label, accentColor = '#64748b' }) => {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)' }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '8px 14px', background: 'rgba(255,255,255,0.04)',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+      }}>
+        <span style={{ fontSize: 11, color: accentColor, fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.07em', fontWeight: 700 }}>{label}</span>
+        <button onClick={() => { navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1500); }} style={{
+          background: 'none', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6,
+          color: copied ? '#63c88c' : '#94a3b8', fontSize: 11, cursor: 'pointer', padding: '3px 10px',
+        }}>{copied ? '✓ Copied' : 'Copy'}</button>
+      </div>
+      <pre style={{
+        margin: 0, padding: '14px', background: '#0d1117',
+        overflowX: 'auto', fontSize: 12.5, lineHeight: 1.65, color: '#8b9cb8',
+        fontFamily: '"Fira Code", "JetBrains Mono", monospace',
+        maxHeight: 320, overflowY: 'auto',
+      }}>
+        {code.split('\n').map((line, i) => (
+          <div key={i} style={{ display: 'flex' }}>
+            <span style={{ minWidth: 36, marginRight: 16, color: '#334155', textAlign: 'right', userSelect: 'none', flexShrink: 0, fontSize: 11 }}>{i + 1}</span>
+            <span style={{ whiteSpace: 'pre' }}>{line || ' '}</span>
+          </div>
+        ))}
+      </pre>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// CODE TABS  — Original | Optimized | Diff
+// ─────────────────────────────────────────────────────────────
+
+const CodeTabs: React.FC<{ original: string; optimized: string }> = ({ original, optimized }) => {
+  const [activeTab, setActiveTab] = useState<'original' | 'optimized' | 'diff'>('original');
+
+  const tabs = [
+    { id: 'original',  label: '📄 Original',  color: '#38bdf8' },
+    { id: 'optimized', label: '✅ Optimized',  color: '#63c88c' },
+    { id: 'diff',      label: '⚡ Diff',       color: '#f97316' },
+  ] as const;
+
+  return (
+    <div>
+      {/* Tab bar */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 0, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+        {tabs.map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            style={{
+              background: activeTab === tab.id ? 'rgba(255,255,255,0.06)' : 'none',
+              border: 'none',
+              borderBottom: activeTab === tab.id ? `2px solid ${tab.color}` : '2px solid transparent',
+              color: activeTab === tab.id ? tab.color : '#475569',
+              padding: '8px 18px', fontSize: 12, fontWeight: activeTab === tab.id ? 700 : 400,
+              cursor: 'pointer', borderRadius: '6px 6px 0 0',
+              transition: 'all 0.15s',
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <div style={{ marginTop: 0 }}>
+        {activeTab === 'original'  && <CodeBlock code={original}  label="Original Code"  accentColor="#38bdf8" />}
+        {activeTab === 'optimized' && <CodeBlock code={optimized} label="Optimized Code" accentColor="#63c88c" />}
+        {activeTab === 'diff'      && <DiffViewer original={original} optimized={optimized} />}
+      </div>
+    </div>
+  );
+};
+
+
+
+const DiffViewer: React.FC<{ original: string; optimized: string }> = ({ original, optimized }) => {
+  const [mode, setMode] = useState<'diff' | 'split'>('diff');
+  const [copied, setCopied] = useState<'orig' | 'opt' | null>(null);
+
+  const diffLines = useMemo(() => computeDiff(original, optimized), [original, optimized]);
+
+  const removedCount = diffLines.filter(l => l.type === 'removed').length;
+  const addedCount   = diffLines.filter(l => l.type === 'added').length;
+  const unchanged    = original === optimized;
+
+  const copy = (text: string, which: 'orig' | 'opt') => {
+    navigator.clipboard.writeText(text);
+    setCopied(which);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  const btnBase: React.CSSProperties = {
+    background: 'none', border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 6, fontSize: 11, cursor: 'pointer', padding: '3px 10px',
+  };
+
+  return (
+    <div style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', width: '100%', boxSizing: 'border-box' }}>
+
+      {/* Toolbar */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '8px 14px', background: 'rgba(255,255,255,0.04)',
+        borderBottom: '1px solid rgba(255,255,255,0.06)', flexWrap: 'wrap', gap: 8,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', fontFamily: 'monospace' }}>
+            Code Diff
+          </span>
+          {!unchanged && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <span style={{
+                fontSize: 11, background: 'rgba(239,68,68,0.15)',
+                border: '1px solid rgba(239,68,68,0.3)',
+                color: '#f87171', borderRadius: 4, padding: '1px 7px', fontFamily: 'monospace',
+              }}>−{removedCount}</span>
+              <span style={{
+                fontSize: 11, background: 'rgba(34,197,94,0.15)',
+                border: '1px solid rgba(34,197,94,0.3)',
+                color: '#4ade80', borderRadius: 4, padding: '1px 7px', fontFamily: 'monospace',
+              }}>+{addedCount}</span>
+            </div>
+          )}
+          {unchanged && (
+            <span style={{ fontSize: 11, color: '#64748b', fontStyle: 'italic' }}>No changes</span>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* Mode toggle */}
+          <div style={{
+            display: 'flex', background: 'rgba(0,0,0,0.3)',
+            borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden',
+          }}>
+            {(['diff', 'split'] as const).map(m => (
+              <button key={m} onClick={() => setMode(m)} style={{
+                ...btnBase, border: 'none', borderRadius: 0,
+                background: mode === m ? 'rgba(99,200,140,0.15)' : 'none',
+                color: mode === m ? '#63c88c' : '#64748b',
+                padding: '4px 12px', fontSize: 11,
+              }}>
+                {m === 'diff' ? '⚡ Unified' : '⬛ Split'}
+              </button>
+            ))}
+          </div>
+
+          <button onClick={() => copy(original, 'orig')} style={{ ...btnBase, color: copied === 'orig' ? '#63c88c' : '#94a3b8' }}>
+            {copied === 'orig' ? '✓' : '⎘'} Original
+          </button>
+          <button onClick={() => copy(optimized, 'opt')} style={{ ...btnBase, color: copied === 'opt' ? '#63c88c' : '#94a3b8' }}>
+            {copied === 'opt' ? '✓' : '⎘'} Optimized
+          </button>
+        </div>
+      </div>
+
+      {/* UNIFIED DIFF VIEW */}
+      {mode === 'diff' && (
+        <div style={{
+          background: '#0d1117', maxHeight: 420, overflowY: 'auto', overflowX: 'auto',
+          fontFamily: '"Fira Code", "JetBrains Mono", monospace', fontSize: 12.5, lineHeight: 1.6,
+        }}>
+          {diffLines.map((dl, idx) => {
+            const isRemoved = dl.type === 'removed';
+            const isAdded   = dl.type === 'added';
+            return (
+              <div key={idx} style={{
+                display: 'flex',
+                background: isRemoved
+                  ? 'rgba(239,68,68,0.12)'
+                  : isAdded
+                    ? 'rgba(34,197,94,0.10)'
+                    : 'transparent',
+                borderLeft: isRemoved
+                  ? '3px solid rgba(239,68,68,0.6)'
+                  : isAdded
+                    ? '3px solid rgba(34,197,94,0.6)'
+                    : '3px solid transparent',
+              }}>
+                {/* Line number */}
+                <span style={{
+                  minWidth: 42, padding: '0 10px', color: '#334155',
+                  borderRight: '1px solid rgba(255,255,255,0.05)',
+                  userSelect: 'none', textAlign: 'right', flexShrink: 0,
+                  background: isRemoved
+                    ? 'rgba(239,68,68,0.08)'
+                    : isAdded
+                      ? 'rgba(34,197,94,0.06)'
+                      : 'rgba(0,0,0,0.2)',
+                }}>
+                  {dl.lineNo}
+                </span>
+
+                {/* Diff symbol */}
+                <span style={{
+                  width: 22, textAlign: 'center', flexShrink: 0, userSelect: 'none',
+                  color: isRemoved ? '#f87171' : isAdded ? '#4ade80' : '#334155',
+                  fontWeight: 700,
+                }}>
+                  {isRemoved ? '−' : isAdded ? '+' : ' '}
+                </span>
+
+                {/* Line content */}
+                <span style={{
+                  padding: '0 12px 0 4px', whiteSpace: 'pre', flex: 1,
+                  color: isRemoved
+                    ? '#fca5a5'
+                    : isAdded
+                      ? '#86efac'
+                      : '#8b9cb8',
+                }}>
+                  {dl.line || ' '}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* SPLIT VIEW */}
+      {mode === 'split' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', background: '#0d1117', overflow: 'hidden' }}>
+          {/* Original */}
+          <div style={{ borderRight: '1px solid rgba(255,255,255,0.06)', minWidth: 0, overflow: 'hidden' }}>
+            <div style={{
+              padding: '6px 12px', fontSize: 10, fontWeight: 700, letterSpacing: '0.1em',
+              color: '#f87171', textTransform: 'uppercase',
+              background: 'rgba(239,68,68,0.06)', borderBottom: '1px solid rgba(239,68,68,0.15)',
+            }}>Original</div>
+            <div style={{ maxHeight: 380, overflowY: 'auto', overflowX: 'auto',
+              fontFamily: '"Fira Code", "JetBrains Mono", monospace', fontSize: 12, lineHeight: 1.65 }}>
+              {original.split('\n').map((line, i) => (
+                <div key={i} style={{ display: 'flex', minWidth: 0,
+                  background: diffLines.find(d => d.type === 'removed' && d.line === line) ? 'rgba(239,68,68,0.10)' : 'transparent',
+                }}>
+                  <span style={{ minWidth: 36, padding: '0 8px', color: '#334155', textAlign: 'right',
+                    borderRight: '1px solid rgba(255,255,255,0.05)', userSelect: 'none', flexShrink: 0,
+                    background: 'rgba(0,0,0,0.2)', fontSize: 11 }}>{i + 1}</span>
+                  <span style={{ padding: '0 12px', whiteSpace: 'pre', color: '#8b9cb8', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{line || ' '}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Optimized */}
+          <div style={{ minWidth: 0, overflow: 'hidden' }}>
+            <div style={{
+              padding: '6px 12px', fontSize: 10, fontWeight: 700, letterSpacing: '0.1em',
+              color: '#4ade80', textTransform: 'uppercase',
+              background: 'rgba(34,197,94,0.06)', borderBottom: '1px solid rgba(34,197,94,0.15)',
+            }}>Optimized</div>
+            <div style={{ maxHeight: 380, overflowY: 'auto', overflowX: 'auto',
+              fontFamily: '"Fira Code", "JetBrains Mono", monospace', fontSize: 12, lineHeight: 1.65 }}>
+              {optimized.split('\n').map((line, i) => (
+                <div key={i} style={{ display: 'flex', minWidth: 0,
+                  background: diffLines.find(d => d.type === 'added' && d.line === line) ? 'rgba(34,197,94,0.08)' : 'transparent',
+                }}>
+                  <span style={{ minWidth: 36, padding: '0 8px', color: '#334155', textAlign: 'right',
+                    borderRight: '1px solid rgba(255,255,255,0.05)', userSelect: 'none', flexShrink: 0,
+                    background: 'rgba(0,0,0,0.2)', fontSize: 11 }}>{i + 1}</span>
+                  <span style={{ padding: '0 12px', whiteSpace: 'pre', color: '#8b9cb8', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{line || ' '}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// SMALL COMPONENTS  (unchanged from original)
 // ─────────────────────────────────────────────────────────────
 
 const MetricBadge: React.FC<{ label: string; value: string | number; accent?: boolean }> = ({ label, value, accent }) => (
@@ -50,33 +380,6 @@ function relativeTime(iso: string): string {
   if (hr  < 24) return `${hr}h ago`;
   return `${day}d ago`;
 }
-
-const CodeBlock: React.FC<{ code: string; label: string }> = ({ code, label }) => {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div>
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        padding: '8px 14px', background: 'rgba(255,255,255,0.04)',
-        borderBottom: '1px solid rgba(255,255,255,0.06)', borderRadius: '8px 8px 0 0',
-      }}>
-        <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{label}</span>
-        <button onClick={() => { navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1500); }} style={{
-          background: 'none', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6,
-          color: copied ? '#63c88c' : '#94a3b8', fontSize: 11, cursor: 'pointer', padding: '3px 10px',
-        }}>{copied ? '✓ Copied' : 'Copy'}</button>
-      </div>
-      <pre style={{
-        margin: 0, padding: '14px', background: 'rgba(0,0,0,0.25)',
-        borderRadius: '0 0 8px 8px', overflowX: 'auto', fontSize: 12.5,
-        lineHeight: 1.65, color: '#cbd5e1',
-        fontFamily: '"Fira Code", "JetBrains Mono", monospace',
-        maxHeight: 260, overflowY: 'auto',
-        border: '1px solid rgba(255,255,255,0.06)', borderTop: 'none',
-      }}>{code || '(no code saved)'}</pre>
-    </div>
-  );
-};
 
 // ─────────────────────────────────────────────────────────────
 // SESSION CARD
@@ -197,6 +500,7 @@ const SessionCard: React.FC<CardProps> = ({ session, onDelete, onRename, onStar 
       {/* Expanded detail */}
       {expanded && (
         <div style={{ padding: '20px' }}>
+          {/* Metric badges */}
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
             {origMI  !== null && <MetricBadge label="Original MI"  value={Number(origMI).toFixed(1)}  />}
             {optMI   !== null && <MetricBadge label="Optimized MI" value={Number(optMI).toFixed(1)}  accent />}
@@ -206,6 +510,7 @@ const SessionCard: React.FC<CardProps> = ({ session, onDelete, onRename, onStar 
             {locDelta !== null && <MetricBadge label="LOC Δ" value={(locDelta <= 0 ? '' : '+') + locDelta} accent={locDelta <= 0} />}
           </div>
 
+          {/* Changes list */}
           {session.changes.length > 0 && (
             <div style={{ marginBottom: 20 }}>
               <p style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 8 }}>Changes Applied</p>
@@ -217,6 +522,7 @@ const SessionCard: React.FC<CardProps> = ({ session, onDelete, onRename, onStar 
             </div>
           )}
 
+          {/* Error */}
           {session.error && (
             <div style={{
               background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)',
@@ -224,10 +530,11 @@ const SessionCard: React.FC<CardProps> = ({ session, onDelete, onRename, onStar 
             }}>⚠ {session.error}</div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
-            <CodeBlock code={session.original_code}  label="Original Code"  />
-            <CodeBlock code={session.optimized_code} label="Optimized Code" />
-          </div>
+          {/* ── CODE VIEWER: Original | Optimized | Diff tabs ── */}
+          <CodeTabs
+            original={session.original_code}
+            optimized={session.optimized_code}
+          />
 
           <p style={{ marginTop: 14, fontSize: 11, color: '#334155', textAlign: 'right' }}>
             Saved: {new Date(session.created_at).toLocaleString()}
@@ -240,7 +547,7 @@ const SessionCard: React.FC<CardProps> = ({ session, onDelete, onRename, onStar 
 
 
 // ─────────────────────────────────────────────────────────────
-// MAIN PAGE
+// MAIN PAGE  (unchanged from original)
 // ─────────────────────────────────────────────────────────────
 
 type FilterTab = 'all' | 'starred' | 'level1' | 'level2' | 'analysis';
@@ -255,7 +562,6 @@ const HistoryPage: React.FC = () => {
   const [activeFilter, setActiveFilter] = useState<FilterTab>('all');
   const [confirmClear, setConfirmClear] = useState(false);
 
-  // Load sessions from MongoDB on mount
   useEffect(() => {
     if (!authApi.isLoggedIn()) { navigate('/login'); return; }
     historyApi.getAll()
@@ -264,7 +570,6 @@ const HistoryPage: React.FC = () => {
       .finally(() => setLoading(false));
   }, [navigate]);
 
-  // Derived filtered list
   const filtered = useMemo(() => {
     let list = sessions;
     if (activeFilter === 'starred')  list = list.filter(s => s.starred);
@@ -283,13 +588,11 @@ const HistoryPage: React.FC = () => {
     return list;
   }, [sessions, searchQuery, activeFilter]);
 
-  // Optimistic handlers — update state immediately, API call runs in background
   const handleDelete = (id: string) => setSessions(prev => prev.filter(s => s._id !== id));
   const handleRename = (id: string, name: string) => setSessions(prev => prev.map(s => s._id === id ? { ...s, name } : s));
   const handleStar   = (id: string) => setSessions(prev => prev.map(s => s._id === id ? { ...s, starred: !s.starred } : s));
 
   const handleClearAll = async () => {
-    // Delete all one by one (simple approach)
     for (const s of sessions) {
       try { await historyApi.delete(s._id); } catch { /* continue */ }
     }
@@ -305,7 +608,6 @@ const HistoryPage: React.FC = () => {
     { id: 'analysis', label: 'Analysis Only', count: sessions.filter(s => s.level === 'none').length },
   ];
 
-  // Base styles
   const page: React.CSSProperties = {
     minHeight: '100vh',
     background: 'linear-gradient(135deg, #050c18 0%, #0a1628 50%, #07101f 100%)',
@@ -363,7 +665,7 @@ const HistoryPage: React.FC = () => {
         {loading && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {[1, 2, 3].map(i => (
-              <div key={i} style={{ height: 64, background: 'rgba(255,255,255,0.03)', borderRadius: 14, border: '1px solid rgba(255,255,255,0.06)', animation: 'pulse 1.5s infinite' }} />
+              <div key={i} style={{ height: 64, background: 'rgba(255,255,255,0.03)', borderRadius: 14, border: '1px solid rgba(255,255,255,0.06)' }} />
             ))}
           </div>
         )}

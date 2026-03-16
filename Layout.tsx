@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Zap, History, LogOut, Terminal, UserCircle } from 'lucide-react';
+import { Zap, History, LogOut, Terminal, UserCircle, BarChart2 } from 'lucide-react';
 import { mockAuth } from '../mockStorage';
 
 interface LayoutProps {
@@ -21,9 +21,10 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout }) => {
   };
 
   const navItems = [
-    { name: 'Optimizer', path: '/optimize', icon: Zap },
-
-    { name: 'Profile', path: '/profile', icon: UserCircle },
+    { name: 'Optimizer',  path: '/optimize',  icon: Zap        },
+    { name: 'History',    path: '/history',   icon: History    },
+    { name: 'Analytics',  path: '/analytics', icon: BarChart2  },
+    { name: 'Profile',    path: '/profile',   icon: UserCircle },
   ];
 
   return (

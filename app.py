@@ -96,10 +96,6 @@ def _make_token(user_id: str, name: str, email: str) -> str:
 
 
 def require_auth(f):
-    """
-    Decorator that protects a route by validating the JWT token.
-    After this runs, g.user_id / g.user_name / g.user_email are available.
-    """
     @wraps(f)
     def wrapper(*args, **kwargs):
         auth_header = request.headers.get("Authorization", "")
@@ -184,7 +180,7 @@ def me():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ANALYSE  (now requires auth + auto-saves)
+# ANALYSE
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route("/api/analyse", methods=["POST"])
@@ -209,7 +205,6 @@ def analyse():
         traceback.print_exc()
         return _error("Internal server error — check server logs for details.", 500)
 
-    # Auto-save to MongoDB
     session_id = None
     if result.get("passed_error_check"):
         if optimization_level == "level1":

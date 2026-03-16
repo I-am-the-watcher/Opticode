@@ -10,6 +10,7 @@ import LoginPage from './pages/LoginPage';
 import OptimizePage from './pages/OptimizePage';
 import HistoryPage from './pages/HistoryPage';
 import ProfilePage from './pages/ProfilePage';
+import AnalyticsPage from './pages/AnalyticsPage';
 import { auth } from './auth';
 
 const App: React.FC = () => {
@@ -34,6 +35,8 @@ const App: React.FC = () => {
   // Show nothing while we check auth to avoid flash-of-wrong-page
   if (!authChecked) return null;
 
+  // Higher-order wrapper for protected routes
+  // Redirects to /login if user is not authenticated
   const ProtectedPage = (component: React.ReactNode) => {
     if (!currentUserName) return <Navigate to="/login" />;
     return (
@@ -44,8 +47,12 @@ const App: React.FC = () => {
   };
 
   return (
+    // HashRouter is used instead of BrowserRouter
+    // Useful for GitHub Pages / static hosting
     <HashRouter>
       <Routes>
+
+        {/* ================= PUBLIC ROUTES ================= */}
 
         {/* Root: logged in → optimize, else → landing */}
         <Route
@@ -53,7 +60,7 @@ const App: React.FC = () => {
           element={currentUserName ? <Navigate to="/optimize" /> : <LandingPage />}
         />
 
-        {/* Login/Register: already logged in → redirect away */}
+        {/* Login: already logged in → redirect away */}
         <Route
           path="/login"
           element={
@@ -63,12 +70,23 @@ const App: React.FC = () => {
           }
         />
 
-        {/* Protected routes */}
-        <Route path="/optimize" element={ProtectedPage(<OptimizePage />)} />
-        <Route path="/history"  element={ProtectedPage(<HistoryPage />)} />
-        <Route path="/profile"  element={ProtectedPage(<ProfilePage />)} />
+        {/* ================= PROTECTED ROUTES ================= */}
 
-        {/* Catch-all */}
+        {/* Core optimization page */}
+        <Route path="/optimize"  element={ProtectedPage(<OptimizePage />)} />
+
+        {/* History page */}
+        <Route path="/history"   element={ProtectedPage(<HistoryPage />)} />
+
+        {/* User profile page */}
+        <Route path="/profile"   element={ProtectedPage(<ProfilePage />)} />
+
+        {/* Analytics dashboard */}
+        <Route path="/analytics" element={ProtectedPage(<AnalyticsPage />)} />
+
+        {/* ================= FALLBACK ROUTE ================= */}
+
+        {/* Catch-all: logged in → optimize, else → landing */}
         <Route
           path="*"
           element={<Navigate to={currentUserName ? "/optimize" : "/"} />}

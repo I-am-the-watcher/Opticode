@@ -6,10 +6,6 @@ Collections
 -----------
 users          — one document per registered account
 optimizations  — one document per optimization run, linked to a user via user_id
-
-Why we keep this in one file:
-  All DB logic lives here. app.py just calls functions from this file.
-  That way if you ever swap MongoDB for PostgreSQL, you only edit this file.
 """
 
 from pymongo import MongoClient, DESCENDING
@@ -28,15 +24,15 @@ load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/opticode")
 
 client = MongoClient(MONGO_URI)
-db     = client.get_database()          # reads the db name from the URI
+db     = client.get_database()
 
 users_collection         = db["users"]
 optimizations_collection = db["optimizations"]
 
-# Ensure unique index on email so two accounts can't share one
+# Unique index on email — two accounts can't share one address
 users_collection.create_index("email", unique=True)
 
-# Index on user_id + created_at so history queries are fast
+# Compound index so history queries (user_id + date sort) are fast
 optimizations_collection.create_index([("user_id", 1), ("created_at", DESCENDING)])
 
 
@@ -89,7 +85,7 @@ def create_user(name: str, email: str, hashed_password: str) -> dict:
     doc = {
         "name":       name,
         "email":      email.lower().strip(),
-        "password":   hashed_password,          # bcrypt hash, never plain text
+        "password":   hashed_password,
         "created_at": datetime.utcnow(),
     }
     result = users_collection.insert_one(doc)
@@ -101,7 +97,6 @@ def find_user_by_email(email: str) -> dict | None:
     """
     Return the full user document (including hashed password) so the
     auth route can verify the submitted password against the stored hash.
-    Returns None if not found.
     """
     return users_collection.find_one({"email": email.lower().strip()})
 
@@ -126,23 +121,7 @@ def save_optimization(
     optimized_analysis: dict,
     error:              str | None = None,
 ) -> dict:
-    """
-    Persist one optimization run for a user.
-
-    Parameters
-    ----------
-    user_id            : MongoDB _id string of the logged-in user
-    original_code      : the raw code the user submitted
-    optimized_code     : the code returned by the optimizer (may equal original)
-    level              : "none" | "level1" | "level2"
-    changes            : list of human-readable change descriptions
-    original_analysis  : dict from complexity_checker.analyze_source()
-    optimized_analysis : dict from complexity_checker.analyze_source()
-    error              : pipeline error string, or None on success
-
-    Returns the saved document as a JSON-safe dict.
-    """
-    # Auto-generate a friendly name from the timestamp
+    """Persist one optimization run for a user."""
     name = f"Session · {datetime.utcnow().strftime('%d %b %Y, %H:%M')}"
 
     doc = {
@@ -165,12 +144,7 @@ def save_optimization(
 
 
 def get_user_optimizations(user_id: str) -> list:
-    """
-    Return all optimization sessions for user_id, newest first.
-
-    This is the main query that powers the History page.
-    SQL equivalent: SELECT * FROM optimizations WHERE user_id = ? ORDER BY created_at DESC
-    """
+    """Return all optimization sessions for user_id, newest first."""
     cursor = optimizations_collection.find(
         {"user_id": user_id}
     ).sort("created_at", DESCENDING)
@@ -179,10 +153,7 @@ def get_user_optimizations(user_id: str) -> list:
 
 
 def get_optimization_by_id(optimization_id: str, user_id: str) -> dict | None:
-    """
-    Fetch a single session. We always check user_id too so one user
-    can never read another user's data (authorization check).
-    """
+    """Fetch a single session, enforcing user_id ownership check."""
     doc = optimizations_collection.find_one({
         "_id":     ObjectId(optimization_id),
         "user_id": user_id,
@@ -191,10 +162,7 @@ def get_optimization_by_id(optimization_id: str, user_id: str) -> dict | None:
 
 
 def delete_optimization(optimization_id: str, user_id: str) -> bool:
-    """
-    Delete a session. Returns True if something was deleted.
-    The user_id check prevents deleting other users' sessions.
-    """
+    """Delete a session. Returns True if something was deleted."""
     result = optimizations_collection.delete_one({
         "_id":     ObjectId(optimization_id),
         "user_id": user_id,
@@ -212,10 +180,7 @@ def rename_optimization(optimization_id: str, user_id: str, new_name: str) -> bo
 
 
 def toggle_star(optimization_id: str, user_id: str) -> bool | None:
-    """
-    Flip the starred flag on a session.
-    Returns the NEW starred value, or None if not found.
-    """
+    """Flip the starred flag. Returns the NEW starred value, or None if not found."""
     doc = optimizations_collection.find_one({
         "_id":     ObjectId(optimization_id),
         "user_id": user_id,
@@ -231,26 +196,9 @@ def toggle_star(optimization_id: str, user_id: str) -> bool | None:
 
 
 def get_user_stats(user_id: str) -> dict:
-    """
-    Aggregate stats for the Profile page.
-
-    MongoDB aggregation pipeline = series of transformation stages.
-    Each stage passes its output as input to the next.
-
-    SQL equivalent:
-        SELECT
-            COUNT(*)                                           AS total,
-            SUM(CASE WHEN level='level1' THEN 1 ELSE 0 END)  AS level1_count,
-            SUM(CASE WHEN level='level2' THEN 1 ELSE 0 END)  AS level2_count,
-            SUM(CASE WHEN starred=1      THEN 1 ELSE 0 END)  AS starred_count,
-            MAX(created_at)                                   AS last_active
-        FROM optimizations WHERE user_id = ?
-    """
+    """Aggregate stats for the Profile page using MongoDB aggregation pipeline."""
     pipeline = [
-        # Stage 1 — filter to this user only
         {"$match": {"user_id": user_id}},
-
-        # Stage 2 — compute all stats in one pass
         {"$group": {
             "_id":           None,
             "total":         {"$sum": 1},
