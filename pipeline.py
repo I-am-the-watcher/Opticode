@@ -14,10 +14,10 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from checks.error_checker import run_all_checks
-from checks.complexity_checker import analyze_source
-from optimizer.rule_optimizer import optimize_code
-from optimizer.llm_optimizer import optimize as llm_optimize
+from error_checker import run_all_checks
+from complexity_checker import analyze_source
+from rule_optimizer import optimize_code
+from llm_optimizer import optimize as llm_optimize
 
 
 # ─────────────────────────────────────────────────────────────────────────────

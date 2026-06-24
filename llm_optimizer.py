@@ -11,7 +11,8 @@ from groq import Groq
 
 import os
 
-api_key = os.getenv("api_key")
+from dotenv import load_dotenv
+load_dotenv()
 
 # FIX: Must be a dict {model_id: display_name}, NOT a set.
 # A set has no .items() method â€” the original fan_out() would crash.

@@ -43,7 +43,7 @@ from database import (
     toggle_star,
     get_user_stats,
 )
-from core.pipeline import run_pipeline
+from pipeline import run_pipeline
 
 import os
 from dotenv import load_dotenv
